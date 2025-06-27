@@ -1,0 +1,16 @@
+# Python virtual environments
+hs_solver/
+venv/
+.env/
+# Python cache
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+# VSCode
+.vscode/
+# Jupyter
+.ipynb_checkpoints/
+dqn_policy/
