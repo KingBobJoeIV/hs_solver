@@ -81,7 +81,7 @@ class ImprovedDQN(nn.Module):
 
     def __init__(self, state_dim, action_dim):
         super().__init__()
-        self.net = nn.Sequential(
+        self.policy_net = nn.Sequential(
             nn.Linear(state_dim, 256),
             nn.ReLU(),
             nn.Dropout(0.1),
@@ -94,25 +94,21 @@ class ImprovedDQN(nn.Module):
         )
 
     def forward(self, x):
-        return self.net(x)
+        return self.policy_net(x)
 
 
 class DQNPlayAgent:
-    def __init__(self, state_dim, action_dim, model_path, use_improved_network=True):
-        # Choose the correct network architecture
-        if use_improved_network:
-            self.policy_net = ImprovedDQN(state_dim, action_dim)
-        else:
-            # Fallback to basic DQN if needed
-            from rl.dqn_agent import DQN
-
-            self.policy_net = DQN(state_dim, action_dim)
-
+    def __init__(self, state_dim, action_dim, model_path):
+        self.policy_net = ImprovedDQN(state_dim, action_dim)
         # Load the trained model
         device = "mps" if torch.backends.mps.is_available() else "cpu"
-        self.policy_net.load_state_dict(torch.load(model_path, map_location=device))
-        self.policy_net.eval()
+        # Load weights into the inner nn.Sequential, not the wrapper module
+        self.policy_net.policy_net.load_state_dict(
+            torch.load(model_path, map_location=device)
+        )
         self.device = device
+        self.policy_net = self.policy_net.to(self.device)
+        self.policy_net.eval()
 
     def choose_action(self, state):
         legal_actions = state.get_legal_actions()
@@ -123,9 +119,11 @@ class DQNPlayAgent:
 
         # Convert to tensor and get Q-values
         with torch.no_grad():
-            state_tensor = torch.tensor(
-                state_vec, dtype=torch.float32, device=self.device
-            ).unsqueeze(0)
+            state_tensor = (
+                torch.tensor(state_vec, dtype=torch.float32)
+                .unsqueeze(0)
+                .to(self.device)
+            )
             q_values = self.policy_net(state_tensor)
 
             # Filter Q-values for legal actions only

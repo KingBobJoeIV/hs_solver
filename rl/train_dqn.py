@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import numpy as np
-from rl.dqn_agent import DQNAgent
+from rl.improved_dqn_agent import ImprovedDQNAgent
 from rl.state_encoder import encode_state
 from toy_hearthstone import setup_game, describe_action, print_board
 from hs_core.random_agent import RandomAgent
@@ -12,62 +12,8 @@ import os
 import math
 import time
 from collections import deque
-
-# Enhanced hyperparameters
-EPISODES = 25000
-TARGET_UPDATE = 500
-EVAL_INTERVAL = 500
-SAVE_INTERVAL = 2500
-BATCH_SIZE = 64
-GAMMA = 0.95
-LR = 1e-3
-BUFFER_SIZE = 50000
-
-# Exploration schedule
-EPSILON_START = 1.0
-EPSILON_END = 0.05
-EPSILON_DECAY = (EPSILON_END / EPSILON_START) ** (1 / (0.6 * EPISODES))
-
-# Prioritized replay parameters
-ALPHA = 0.6
-BETA_START = 0.4
-BETA_END = 1.0
-
-# Reward configuration
-REWARD_CONFIG = {
-    "hero_damage": 0.3,
-    "self_damage": -0.2,
-    "board_presence": 0.15,
-    "kill_minion": 0.2,
-    "lose_minion": -0.15,
-    "overdraw": -0.3,
-    "fatigue": -0.4,
-    "mana_waste": -0.08,
-    "mana_efficiency": 0.03,
-    "win_reward": 3.0,
-    "loss_penalty": -3.0,
-    "turn_length_penalty": -0.01,
-}
-
-# Curriculum and early stopping
-CURRICULUM_THRESHOLD = 0.6
-EARLY_STOP_PATIENCE = 5
-MIN_IMPROVEMENT = 0.02
-TARGET_WIN_RATE = 0.90
-WARMUP_EPISODES = 1000
-
-# Action space size
-ACTION_SPACE_SIZE = 50
-
-
-def get_beta(episode):
-    """Beta annealing for prioritized replay"""
-    return min(BETA_END, BETA_START + (BETA_END - BETA_START) * episode / EPISODES)
-
-
-def get_learning_rate(episode):
-    """Cosine annealing learning rate schedule"""
-    return LR * 0.5 * (1 + math.cos(math.pi * episode / EPISODES))
+import rl.constants as constants
+from rl.utils import get_beta, get_learning_rate
 
 
 def enhanced_encode_state(game_state, player_idx):
@@ -155,17 +101,17 @@ def enhanced_calculate_reward(game, prev_game_state, action, acting_player_idx):
     # Hero damage (primary objective)
     hero_damage = prev_opponent.hero_hp - opponent.hero_hp
     if hero_damage > 0:
-        reward += REWARD_CONFIG["hero_damage"] * hero_damage
+        reward += constants.REWARD_CONFIG["hero_damage"] * hero_damage
 
     # Self damage penalty
     self_damage = prev_current_player.hero_hp - current_player.hero_hp
     if self_damage > 0:
-        reward += REWARD_CONFIG["self_damage"] * self_damage
+        reward += constants.REWARD_CONFIG["self_damage"] * self_damage
 
     # Board control
     board_increase = len(current_player.board) - len(prev_current_player.board)
     if board_increase > 0:
-        reward += REWARD_CONFIG["board_presence"] * board_increase
+        reward += constants.REWARD_CONFIG["board_presence"] * board_increase
 
     # Minion trading evaluation
     prev_opp_minions = {id(m): m for m in prev_opponent.board}
@@ -174,7 +120,9 @@ def enhanced_calculate_reward(game, prev_game_state, action, acting_player_idx):
     for minion_id, minion in prev_opp_minions.items():
         if minion_id not in curr_opp_minions:
             reward += (
-                REWARD_CONFIG["kill_minion"] * (minion.attack + minion.health) / 6.0
+                constants.REWARD_CONFIG["kill_minion"]
+                * (minion.attack + minion.health)
+                / 6.0
             )
 
     prev_own_minions = {id(m): m for m in prev_current_player.board}
@@ -183,7 +131,9 @@ def enhanced_calculate_reward(game, prev_game_state, action, acting_player_idx):
     for minion_id, minion in prev_own_minions.items():
         if minion_id not in curr_own_minions:
             reward += (
-                REWARD_CONFIG["lose_minion"] * (minion.attack + minion.health) / 6.0
+                constants.REWARD_CONFIG["lose_minion"]
+                * (minion.attack + minion.health)
+                / 6.0
             )
 
     # Resource management penalties
@@ -191,28 +141,28 @@ def enhanced_calculate_reward(game, prev_game_state, action, acting_player_idx):
     hand_increase = len(current_player.hand) - len(prev_current_player.hand)
 
     if deck_decrease > 0 and hand_increase == 0 and len(prev_current_player.hand) >= 4:
-        reward += REWARD_CONFIG["overdraw"]
+        reward += constants.REWARD_CONFIG["overdraw"]
 
     fatigue_damage = current_player.fatigue - prev_current_player.fatigue
     if fatigue_damage > 0:
-        reward += REWARD_CONFIG["fatigue"] * fatigue_damage
+        reward += constants.REWARD_CONFIG["fatigue"] * fatigue_damage
 
     # Mana efficiency
     if action[0] == "end":
         wasted_mana = prev_current_player.mana
         if wasted_mana > 1:
-            reward += REWARD_CONFIG["mana_waste"] * wasted_mana
+            reward += constants.REWARD_CONFIG["mana_waste"] * wasted_mana
 
     mana_spent = prev_current_player.mana - current_player.mana
     if mana_spent > 0 and action[0] == "play":
-        reward += REWARD_CONFIG["mana_efficiency"] * mana_spent
+        reward += constants.REWARD_CONFIG["mana_efficiency"] * mana_spent
 
     # Terminal rewards (most important)
     if game.is_terminal():
         if game.winner == acting_player_idx:
-            reward += REWARD_CONFIG["win_reward"]
+            reward += constants.REWARD_CONFIG["win_reward"]
         elif game.winner is not None:
-            reward += REWARD_CONFIG["loss_penalty"]
+            reward += constants.REWARD_CONFIG["loss_penalty"]
 
     return reward
 
@@ -281,47 +231,6 @@ def evaluate_agent(agent, opponent_type="random", num_games=200, verbose=False):
     return win_rate
 
 
-class ImprovedDQNAgent(DQNAgent):
-    """Enhanced DQN agent with improved network architecture"""
-
-    def __init__(self, state_dim, action_dim, **kwargs):
-        super().__init__(state_dim, action_dim, **kwargs)
-
-        # Replace the network with a deeper one
-        self.policy_net = nn.Sequential(
-            nn.Linear(state_dim, 256),
-            nn.ReLU(),
-            nn.Dropout(0.1),
-            nn.Linear(256, 128),
-            nn.ReLU(),
-            nn.Dropout(0.1),
-            nn.Linear(128, 64),
-            nn.ReLU(),
-            nn.Linear(64, action_dim),
-        ).to(self.device)
-
-        self.target_net = nn.Sequential(
-            nn.Linear(state_dim, 256),
-            nn.ReLU(),
-            nn.Dropout(0.1),
-            nn.Linear(256, 128),
-            nn.ReLU(),
-            nn.Dropout(0.1),
-            nn.Linear(128, 64),
-            nn.ReLU(),
-            nn.Linear(64, action_dim),
-        ).to(self.device)
-
-        self.target_net.load_state_dict(self.policy_net.state_dict())
-        self.optimizer = torch.optim.Adam(self.policy_net.parameters(), lr=LR)
-
-    def update_learning_rate(self, episode):
-        """Update learning rate according to schedule"""
-        new_lr = get_learning_rate(episode)
-        for param_group in self.optimizer.param_groups:
-            param_group["lr"] = new_lr
-
-
 def improved_dqn_training():
     """Main training loop with all improvements"""
 
@@ -335,33 +244,33 @@ def improved_dqn_training():
     STATE_SIZE = dummy_state.shape[0]
 
     print(f"State size: {STATE_SIZE}")
-    print(f"Action space size: {ACTION_SPACE_SIZE}")
-    print(f"Training for {EPISODES} episodes")
+    print(f"Action space size: {constants.ACTION_SPACE_SIZE}")
+    print(f"Training for {constants.EPISODES} episodes")
 
     # Initialize agents
     agent = ImprovedDQNAgent(
         STATE_SIZE,
-        ACTION_SPACE_SIZE,
-        lr=LR,
-        gamma=GAMMA,
-        buffer_size=BUFFER_SIZE,
-        batch_size=BATCH_SIZE,
-        epsilon_start=EPSILON_START,
-        epsilon_end=EPSILON_END,
-        epsilon_decay=EPSILON_DECAY,
+        constants.ACTION_SPACE_SIZE,
+        lr=constants.LR,
+        gamma=constants.GAMMA,
+        buffer_size=constants.BUFFER_SIZE,
+        batch_size=constants.BATCH_SIZE,
+        epsilon_start=constants.EPSILON_START,
+        epsilon_end=constants.EPSILON_END,
+        epsilon_decay=constants.EPSILON_DECAY,
         prioritized_replay=True,
-        alpha=ALPHA,
-        beta=BETA_START,
+        alpha=constants.ALPHA,
+        beta=constants.BETA_START,
     )
 
     target_agent = ImprovedDQNAgent(
         STATE_SIZE,
-        ACTION_SPACE_SIZE,
-        lr=LR,
-        gamma=GAMMA,
-        buffer_size=BUFFER_SIZE,
-        batch_size=BATCH_SIZE,
-        epsilon_decay=EPSILON_DECAY,
+        constants.ACTION_SPACE_SIZE,
+        lr=constants.LR,
+        gamma=constants.GAMMA,
+        buffer_size=constants.BUFFER_SIZE,
+        batch_size=constants.BATCH_SIZE,
+        epsilon_decay=constants.EPSILON_DECAY,
         prioritized_replay=True,
     )
     target_agent.policy_net.load_state_dict(agent.policy_net.state_dict())
@@ -382,15 +291,16 @@ def improved_dqn_training():
     start_time = time.time()
 
     print("Starting training...")
-    print(f"Epsilon decay rate: {EPSILON_DECAY:.6f}")
+    print(f"Epsilon decay rate: {constants.EPSILON_DECAY:.6f}")
     print("-" * 50)
 
-    for episode in range(1, EPISODES + 1):
+    for episode in range(1, constants.EPISODES + 1):
         # Curriculum opponent selection
         if curriculum_phase == 0:
             opponent = RandomAgent()
         else:
-            if random.random() < 0.2:  # 20% random opponents
+            # Increase self-play: 95% self-play, 5% random opponents
+            if random.random() < 0.05:  # 5% random opponents
                 opponent = RandomAgent()
             else:
                 opponent = target_agent
@@ -438,7 +348,7 @@ def improved_dqn_training():
             episode_length += 1
 
             # Store experience and update (only for our training agent)
-            if acting_agent is agent and episode > WARMUP_EPISODES:
+            if acting_agent is agent and episode > constants.WARMUP_EPISODES:
                 next_state = enhanced_encode_state(game, game.current)
                 reward = enhanced_calculate_reward(
                     game, prev_game_state, action, current_player_idx
@@ -446,7 +356,7 @@ def improved_dqn_training():
 
                 # Add turn length penalty for very long games
                 if episode_length > 50:
-                    reward += REWARD_CONFIG["turn_length_penalty"]
+                    reward += constants.REWARD_CONFIG["turn_length_penalty"]
 
                 done = game.is_terminal()
                 episode_reward += reward
@@ -461,11 +371,11 @@ def improved_dqn_training():
         episode_lengths.append(episode_length)
 
         # Update learning rate
-        if episode > WARMUP_EPISODES:
+        if episode > constants.WARMUP_EPISODES:
             agent.update_learning_rate(episode)
 
         # Target network update
-        if episode % TARGET_UPDATE == 0:
+        if episode % constants.TARGET_UPDATE == 0:
             agent.update_target()
             target_agent.policy_net.load_state_dict(agent.policy_net.state_dict())
 
@@ -482,7 +392,10 @@ def improved_dqn_training():
             )
 
         # Evaluation
-        if episode % EVAL_INTERVAL == 0 and episode > WARMUP_EPISODES:
+        if (
+            episode % constants.EVAL_INTERVAL == 0
+            and episode > constants.WARMUP_EPISODES
+        ):
             # Evaluate against random agent
             baseline_win_rate = evaluate_agent(agent, "random", num_games=200)
             baseline_history.append(baseline_win_rate)
@@ -505,7 +418,10 @@ def improved_dqn_training():
             print("-" * 50)
 
             # Curriculum advancement
-            if curriculum_phase == 0 and baseline_win_rate > CURRICULUM_THRESHOLD:
+            if (
+                curriculum_phase == 0
+                and baseline_win_rate > constants.CURRICULUM_THRESHOLD
+            ):
                 print(f"🎓 Advancing to curriculum phase 1 at episode {episode}!")
                 curriculum_phase = 1
 
@@ -525,20 +441,20 @@ def improved_dqn_training():
                 early_stop_counter += 1
 
             # Early stopping
-            if baseline_win_rate >= TARGET_WIN_RATE:
+            if baseline_win_rate >= constants.TARGET_WIN_RATE:
                 print(
-                    f"🎯 Target win rate {TARGET_WIN_RATE:.2f} achieved! Stopping early."
+                    f"🎯 Target win rate {constants.TARGET_WIN_RATE:.2f} achieved! Stopping early."
                 )
                 break
 
-            if early_stop_counter >= EARLY_STOP_PATIENCE:
+            if early_stop_counter >= constants.EARLY_STOP_PATIENCE:
                 print(
-                    f"⏹️  Early stopping: No improvement for {EARLY_STOP_PATIENCE} evaluations"
+                    f"⏹️  Early stopping: No improvement for {constants.EARLY_STOP_PATIENCE} evaluations"
                 )
                 break
 
         # Save checkpoints
-        if episode % SAVE_INTERVAL == 0:
+        if episode % constants.SAVE_INTERVAL == 0:
             torch.save(
                 agent.policy_net.state_dict(), f"dqn_policy/dqn_policy_ep{episode}.pt"
             )
@@ -555,7 +471,9 @@ def improved_dqn_training():
     if len(baseline_history) > 1:
         episodes_eval = list(
             range(
-                EVAL_INTERVAL, EVAL_INTERVAL * len(baseline_history) + 1, EVAL_INTERVAL
+                constants.EVAL_INTERVAL,
+                constants.EVAL_INTERVAL * len(baseline_history) + 1,
+                constants.EVAL_INTERVAL,
             )
         )
 
@@ -566,10 +484,10 @@ def improved_dqn_training():
         if len(win_history) > 1:
             plt.plot(episodes_eval, win_history, "r--", linewidth=2, label="vs Self")
         plt.axhline(
-            y=TARGET_WIN_RATE,
+            y=constants.TARGET_WIN_RATE,
             color="g",
             linestyle=":",
-            label=f"Target ({TARGET_WIN_RATE})",
+            label=f"Target ({constants.TARGET_WIN_RATE})",
         )
         plt.xlabel("Episode")
         plt.ylabel("Win Rate")

@@ -139,9 +139,10 @@ if __name__ == "__main__":
     dqn_agent = DQNPlayAgent(
         state_dim=STATE_SIZE,
         action_dim=ACTION_SPACE_SIZE,
-        model_path="/Users/manas/projects/code/hs_solver/dqn_policy/dqn_policy_final.pt",
+        model_path="/Users/manas/projects/code/hs_solver/dqn_policy/dqn_policy_final.pt",  # We will load the state_dict directly
     )
     random_agent = RandomAgent()
+
     # Play one visualized game with random first player
     agents = [dqn_agent, random_agent]
     random.shuffle(agents)
