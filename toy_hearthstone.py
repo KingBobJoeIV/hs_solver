@@ -7,7 +7,7 @@ from hs_core.gamestate import GameState
 from hs_core.utils import parse_effect
 from rl.dqn_agent import DQNAgent
 from rl.state_encoder import encode_state
-from hs_core.dqn_play_agent import DQNPlayAgent
+from hs_core.dqn_play_agent import DQNPlayAgent, enhanced_encode_state
 import torch
 from hs_core.random_agent import RandomAgent
 
@@ -126,7 +126,13 @@ def play_game(agent1, agent2, visualize=False):
     return state.winner
 
 
-STATE_SIZE = 60  # Update if your encoder changes
+def get_state_size():
+    dummy_game = setup_game()
+    dummy_state = enhanced_encode_state(dummy_game, 0)  # You'll need to import this
+    return dummy_state.shape[0]
+
+
+STATE_SIZE = get_state_size()  # This should be around 70-80 for the enhanced encoder
 ACTION_SPACE_SIZE = 50
 
 if __name__ == "__main__":
