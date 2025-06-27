@@ -299,8 +299,7 @@ def improved_dqn_training():
         if curriculum_phase == 0:
             opponent = RandomAgent()
         else:
-            # Increase self-play: 95% self-play, 5% random opponents
-            if random.random() < 0.05:  # 5% random opponents
+            if random.random() < 0.2:  # 20% random opponents
                 opponent = RandomAgent()
             else:
                 opponent = target_agent

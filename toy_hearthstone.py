@@ -9,6 +9,7 @@ from rl.dqn_agent import DQNAgent
 from rl.state_encoder import encode_state
 from hs_core.dqn_play_agent import DQNPlayAgent, enhanced_encode_state
 import torch
+import numpy as np
 from hs_core.random_agent import RandomAgent
 
 ALL_CARDS = [
@@ -153,13 +154,63 @@ if __name__ == "__main__":
         f"Player 2: {'DQN' if isinstance(agents[1], DQNPlayAgent) else 'RandomAgent'}"
     )
     play_game(agents[0], agents[1], visualize=True)
-    # Simulate 1000 games with random first/second for each
-    wins = [0, 0]
+
+    # Simulate 1000 games with random first/second for each, tracking detailed stats
+    stats = {
+        "dqn_first": {"wins": 0, "losses": 0, "turns_win": [], "turns_loss": []},
+        "dqn_second": {"wins": 0, "losses": 0, "turns_win": [], "turns_loss": []},
+    }
     for i in range(1000):
         agents = [dqn_agent, random_agent]
         random.shuffle(agents)
-        winner = play_game(agents[0], agents[1])
-        # Map winner to correct agent
-        if winner is not None:
-            wins[agents[winner] == dqn_agent] += 1
-    print(f"DQN wins: {wins[1]}, RandomAgent wins: {wins[0]}")
+        dqn_first = isinstance(agents[0], DQNPlayAgent)
+        winner = None
+        state = setup_game()
+        state.players[0].start_turn()
+        turns = 0
+        while not state.is_terminal():
+            agent = agents[state.current]
+            while True:
+                actions = state.get_legal_actions()
+                non_end_actions = [a for a in actions if a[0] != "end"]
+                if not non_end_actions:
+                    action = ("end",)
+                else:
+                    action = agent.choose_action(state)
+                prev_player = state.current
+                prev_state = copy.deepcopy(state)
+                state.step(action)
+                if action[0] == "end" or state.is_terminal():
+                    break
+            turns += 1
+        winner = state.winner
+        # DQN is first player
+        if dqn_first:
+            if winner == 0:
+                stats["dqn_first"]["wins"] += 1
+                stats["dqn_first"]["turns_win"].append(turns)
+            elif winner == 1:
+                stats["dqn_first"]["losses"] += 1
+                stats["dqn_first"]["turns_loss"].append(turns)
+        # DQN is second player
+        else:
+            if winner == 1:
+                stats["dqn_second"]["wins"] += 1
+                stats["dqn_second"]["turns_win"].append(turns)
+            elif winner == 0:
+                stats["dqn_second"]["losses"] += 1
+                stats["dqn_second"]["turns_loss"].append(turns)
+
+    def summarize(label, d):
+        total = d["wins"] + d["losses"]
+        winrate = d["wins"] / total if total > 0 else 0
+        avg_turns_win = np.mean(d["turns_win"]) if d["turns_win"] else 0
+        avg_turns_loss = np.mean(d["turns_loss"]) if d["turns_loss"] else 0
+        print(f"{label}:")
+        print(f"  Games: {total}")
+        print(f"  Winrate: {winrate:.3f} ({d['wins']}/{total})")
+        print(f"  Avg turns (win): {avg_turns_win:.2f}")
+        print(f"  Avg turns (loss): {avg_turns_loss:.2f}")
+
+    summarize("DQN First", stats["dqn_first"])
+    summarize("DQN Second", stats["dqn_second"])
