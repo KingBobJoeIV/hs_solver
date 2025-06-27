@@ -133,7 +133,7 @@ if __name__ == "__main__":
     dqn_agent = DQNPlayAgent(
         state_dim=STATE_SIZE,
         action_dim=ACTION_SPACE_SIZE,
-        model_path="dqn_policy/dqn_policy_best_ep1500.pt",
+        model_path="/Users/manas/projects/code/hs_solver/dqn_policy/dqn_policy_final.pt",
     )
     random_agent = RandomAgent()
     # Play one visualized game with random first player
