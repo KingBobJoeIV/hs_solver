@@ -5,7 +5,13 @@ from rl.improved_dqn_agent import ImprovedDQNAgent
 from rl.state_encoder import encode_state
 from toy_hearthstone import setup_game, describe_action, print_board
 from hs_core.random_agent import RandomAgent
+from hs_core.scripted_agents import (
+    AggroScriptedAgent,
+    BoardControlScriptedAgent,
+    BalancedScriptedAgent,
+)
 import random
+from torch.optim.lr_scheduler import ReduceLROnPlateau  # dynamic LR scheduling
 import matplotlib.pyplot as plt
 import copy
 import os
@@ -13,84 +19,11 @@ import math
 import time
 from collections import deque
 import rl.constants as constants
-from rl.utils import get_beta, get_learning_rate
-
-
-def enhanced_encode_state(game_state, player_idx):
-    """Enhanced state encoding with normalized features"""
-    player = game_state.players[player_idx]
-    opponent = game_state.players[1 - player_idx]
-    state = []
-
-    # Basic player info (normalized)
-    state += [
-        player.hero_hp / 5.0,
-        player.mana / 5.0,
-        player.max_mana / 5.0,
-        len(player.deck) / 7.0,
-        player.fatigue / 5.0,
-        opponent.hero_hp / 5.0,
-        opponent.mana / 5.0,
-        opponent.max_mana / 5.0,
-        len(opponent.deck) / 7.0,
-        opponent.fatigue / 5.0,
-    ]
-
-    # Turn information
-    state += [
-        player.turn / 10.0,
-        int(player_idx == game_state.current),
-    ]
-
-    # Enhanced hand encoding
-    card_features = {
-        "1/1": [1 / 5, 1 / 5, 1 / 5, 0],
-        "1 mana deal 1": [1 / 5, 1 / 5, 0, 1],
-        "2/2": [2 / 5, 2 / 5, 2 / 5, 0],
-        "2 1/1 deal 1": [2 / 5, 1 / 5, 1 / 5, 0],
-        "3/3": [3 / 5, 3 / 5, 3 / 5, 0],
-        "3 2/2 deal 1": [3 / 5, 2 / 5, 2 / 5, 0],
-        "3 mana deal 2": [3 / 5, 2 / 5, 0, 1],
-        "The Coin": [0, 0, 0, 1],
-    }
-
-    for i in range(4):
-        if i < len(player.hand):
-            card = player.hand[i]
-            if card.name in card_features:
-                state += card_features[card.name]
-            else:
-                state += [0, 0, 0, 0]
-        else:
-            state += [0, 0, 0, 0]
-
-    # Board encoding (normalized)
-    for minion in player.board[:3]:
-        state += [minion.attack / 5.0, minion.health / 5.0, int(minion.can_attack)]
-    for _ in range(3 - len(player.board)):
-        state += [0, 0, 0]
-
-    for minion in opponent.board[:3]:
-        state += [minion.attack / 5.0, minion.health / 5.0, int(minion.can_attack)]
-    for _ in range(3 - len(opponent.board)):
-        state += [0, 0, 0]
-
-    # Strategic features
-    total_player_board_value = sum(m.attack + m.health for m in player.board)
-    total_opponent_board_value = sum(m.attack + m.health for m in opponent.board)
-
-    state += [
-        total_player_board_value / 15.0,
-        total_opponent_board_value / 15.0,
-        len(player.board) / 3.0,
-        len(opponent.board) / 3.0,
-    ]
-
-    return np.array(state, dtype=np.float32)
+from rl.utils import get_beta, get_learning_rate, enhanced_encode_state
 
 
 def enhanced_calculate_reward(game, prev_game_state, action, acting_player_idx):
-    """Enhanced reward function with better strategic understanding"""
+    """Enhanced reward function with better strategic understanding and coin synergies"""
     reward = 0.0
 
     current_player = game.players[acting_player_idx]
@@ -156,6 +89,63 @@ def enhanced_calculate_reward(game, prev_game_state, action, acting_player_idx):
     mana_spent = prev_current_player.mana - current_player.mana
     if mana_spent > 0 and action[0] == "play":
         reward += constants.REWARD_CONFIG["mana_efficiency"] * mana_spent
+
+    # Add coin usage reward for second player
+    coin_used_this_turn = False
+    coin_killed_minion = False
+    coin_board_swing = False
+    if action[0] == "play":
+        card = (
+            prev_current_player.hand[action[1]]
+            if len(prev_current_player.hand) > action[1]
+            else None
+        )
+        if (
+            card is not None
+            and getattr(card, "name", None) == "The Coin"
+            and not getattr(prev_current_player, "is_first", True)
+        ):
+            reward += constants.REWARD_CONFIG.get("coin_usage", 0.0)
+            coin_used_this_turn = True
+        # Bonus for using the coin to play an oversized minion
+        if (
+            card is not None
+            and getattr(card, "card_type", None) == "minion"
+            and not prev_current_player.is_first
+        ):
+            if card.mana > prev_current_player.max_mana:
+                reward += constants.REWARD_CONFIG.get("coin_play_minion", 0.0)
+
+    # --- Coin synergy rewards ---
+    # If Coin was used this turn, check for board swing or removal
+    if not prev_current_player.is_first:
+        # Detect if Coin was used this turn (mana increased by 1, Coin left hand)
+        prev_has_coin = any(
+            getattr(card, "name", None) == "The Coin"
+            for card in prev_current_player.hand
+        )
+        curr_has_coin = any(
+            getattr(card, "name", None) == "The Coin" for card in current_player.hand
+        )
+        coin_used_this_turn = prev_has_coin and not curr_has_coin
+        # Board swing: did our board size increase and/or opponent's decrease?
+        board_delta = (len(current_player.board) - len(prev_current_player.board)) - (
+            len(opponent.board) - len(prev_opponent.board)
+        )
+        if coin_used_this_turn and board_delta > 0:
+            reward += constants.REWARD_CONFIG.get("coin_board_swing", 0.0)
+            coin_board_swing = True
+        # Coin+removal: did we kill an enemy minion this turn and use Coin?
+        prev_opp_minions = {id(m): m for m in prev_opponent.board}
+        curr_opp_minions = {id(m): m for m in opponent.board}
+        killed_minions = [
+            minion
+            for minion_id, minion in prev_opp_minions.items()
+            if minion_id not in curr_opp_minions
+        ]
+        if coin_used_this_turn and killed_minions:
+            reward += constants.REWARD_CONFIG.get("coin_removal", 0.0)
+            coin_killed_minion = True
 
     # Terminal rewards (most important)
     if game.is_terminal():
@@ -274,6 +264,36 @@ def improved_dqn_training():
         prioritized_replay=True,
     )
     target_agent.policy_net.load_state_dict(agent.policy_net.state_dict())
+    # Set up learning-rate scheduler and initial checkpoint
+    scheduler = ReduceLROnPlateau(
+        agent.optimizer,
+        mode="max",  # maximize win rate
+        factor=0.5,  # drop LR by half on plateau
+        patience=2,  # wait 2 eval intervals
+        verbose=True,
+    )
+    best_checkpoint_rate = 0.0
+    torch.save(agent.policy_net.state_dict(), "dqn_policy/best.pt")
+    # Set up LR scheduler on plateau and initial checkpoint
+    scheduler = ReduceLROnPlateau(
+        agent.optimizer,
+        mode="max",  # maximize win rate
+        factor=0.5,  # reduce LR by half on plateau
+        patience=2,  # wait 2 eval intervals
+        verbose=True,
+    )
+    # Track best checkpoint for rollback
+    best_checkpoint_rate = 0.0
+    torch.save(agent.policy_net.state_dict(), "dqn_policy/best.pt")
+
+    # Opponent pool for advanced self-play
+    opponent_pool = [copy.deepcopy(target_agent)]
+
+    # Scripted agents
+    aggro_agent = AggroScriptedAgent()
+    board_control_agent = BoardControlScriptedAgent()
+    balanced_agent = BalancedScriptedAgent()
+    scripted_opponents = [aggro_agent, board_control_agent, balanced_agent]
 
     # Training tracking
     win_history = []
@@ -295,14 +315,25 @@ def improved_dqn_training():
     print("-" * 50)
 
     for episode in range(1, constants.EPISODES + 1):
-        # Curriculum opponent selection
+        # Periodic epsilon reset to encourage exploration
+        if episode % 2000 == 0:
+            agent.epsilon = max(agent.epsilon, 0.15)
+        # Curriculum opponent selection with advanced self-play and scripted agents
         if curriculum_phase == 0:
-            opponent = RandomAgent()
-        else:
-            if random.random() < 0.2:  # 20% random opponents
-                opponent = RandomAgent()
+            # 80% random, 20% scripted
+            if random.random() < 0.2:
+                opponent = random.choice(scripted_opponents)
             else:
-                opponent = target_agent
+                opponent = RandomAgent()
+        else:
+            # 5% random, 10% scripted, 85% self-play from pool
+            r = random.random()
+            if r < 0.05:
+                opponent = RandomAgent()
+            elif r < 0.15:
+                opponent = random.choice(scripted_opponents)
+            else:
+                opponent = random.choice(opponent_pool)
 
         # Random first player assignment
         agents = [agent, opponent]
@@ -377,6 +408,12 @@ def improved_dqn_training():
         if episode % constants.TARGET_UPDATE == 0:
             agent.update_target()
             target_agent.policy_net.load_state_dict(agent.policy_net.state_dict())
+            # Add snapshot to opponent pool for self-play
+            if curriculum_phase > 0:
+                opponent_pool.append(copy.deepcopy(target_agent))
+                # Limit pool size to last 5
+                if len(opponent_pool) > 5:
+                    opponent_pool.pop(0)
 
         # Logging
         if episode % 100 == 0 or episode == 1:
@@ -399,56 +436,110 @@ def improved_dqn_training():
             baseline_win_rate = evaluate_agent(agent, "random", num_games=200)
             baseline_history.append(baseline_win_rate)
 
-            # Self-play evaluation
+            # Evaluate against scripted agents
+            scripted_winrates = []
+            for scripted in scripted_opponents:
+                wr = evaluate_agent(agent, scripted, num_games=100)
+                scripted_winrates.append(wr)
+
+            # Self-play evaluation (vs current target agent)
             if curriculum_phase > 0:
                 self_play_win_rate = evaluate_agent(agent, target_agent, num_games=100)
                 win_history.append(self_play_win_rate)
             else:
-                win_history.append(0.5)  # Placeholder during phase 0
+                self_play_win_rate = 0.5  # Placeholder during phase 0
+                win_history.append(0.5)
+
+            # Evaluation vs pool of past agents (excluding latest target_agent)
+            if curriculum_phase > 0 and len(opponent_pool) > 1:
+                pool_winrates = []
+                for idx, past_agent in enumerate(opponent_pool[:-1]):  # Exclude latest
+                    winrate = evaluate_agent(agent, past_agent, num_games=50)
+                    pool_winrates.append(winrate)
+                avg_pool_winrate = np.mean(pool_winrates) if pool_winrates else 0
+            else:
+                pool_winrates = []
+                avg_pool_winrate = None
 
             epsilon_history.append(agent.epsilon)
 
             print(f"\nEvaluation at episode {episode}:")
             print(f"  Win rate vs Random: {baseline_win_rate:.3f}")
+            print(f"  Win rate vs AggroScriptedAgent: {scripted_winrates[0]:.3f}")
+            print(
+                f"  Win rate vs BoardControlScriptedAgent: {scripted_winrates[1]:.3f}"
+            )
+            print(f"  Win rate vs BalancedScriptedAgent: {scripted_winrates[2]:.3f}")
             if curriculum_phase > 0:
                 print(f"  Win rate vs Self:   {self_play_win_rate:.3f}")
+                if avg_pool_winrate is not None:
+                    print(f"  Win rate vs pool of past agents: {avg_pool_winrate:.3f}")
+                    for i, wr in enumerate(pool_winrates):
+                        print(f"    vs pool agent {i}: {wr:.3f}")
             print(f"  Epsilon: {agent.epsilon:.4f}")
             print(f"  Learning rate: {get_learning_rate(episode):.6f}")
             print("-" * 50)
 
+            # Compute composite evaluation score across opponents
+            metrics = [baseline_win_rate] + scripted_winrates
+            if curriculum_phase > 0:
+                metrics.append(self_play_win_rate)
+                metrics.extend(pool_winrates)
+            overall_score = np.mean(metrics)
+            # Scheduler on composite score
+            scheduler.step(overall_score)
+            # Checkpoint & rollback based on composite score
+            if overall_score > best_checkpoint_rate:
+                best_checkpoint_rate = overall_score
+                torch.save(agent.policy_net.state_dict(), "dqn_policy/best.pt")
+                early_stop_counter = 0
+            else:
+                early_stop_counter += 1
+                if early_stop_counter >= constants.EARLY_STOP_PATIENCE:
+                    print("↩️ Rollback to best policy due to plateau")
+                    agent.policy_net.load_state_dict(
+                        torch.load("dqn_policy/best.pt", map_location=agent.device)
+                    )
+                    agent.update_target()
+                    agent.epsilon = min(agent.epsilon + 0.2, constants.EPSILON_START)
+                    early_stop_counter = 0
+
             # Curriculum advancement
-            if (
-                curriculum_phase == 0
-                and baseline_win_rate > constants.CURRICULUM_THRESHOLD
-            ):
+            if curriculum_phase == 0 and overall_score > constants.CURRICULUM_THRESHOLD:
                 print(f"🎓 Advancing to curriculum phase 1 at episode {episode}!")
                 curriculum_phase = 1
 
-            # Save best model
-            if baseline_win_rate > best_win_rate:
-                improvement = baseline_win_rate - best_win_rate
-                best_win_rate = baseline_win_rate
+            # Save best model (composite score)
+            if overall_score > best_win_rate:
+                improvement = overall_score - best_win_rate
+                best_win_rate = overall_score
                 torch.save(
                     agent.policy_net.state_dict(),
                     f"dqn_policy/dqn_policy_best_ep{episode}.pt",
                 )
                 print(
-                    f"💾 New best model saved! Win rate: {baseline_win_rate:.3f} (+{improvement:.3f})"
+                    f"💾 New best model saved! Composite score: {overall_score:.3f} (+{improvement:.3f})"
                 )
                 early_stop_counter = 0
             else:
                 early_stop_counter += 1
 
-            # Early stopping
-            if baseline_win_rate >= constants.TARGET_WIN_RATE:
+            # Early stopping (require minimum episodes)
+            if (
+                overall_score >= constants.TARGET_WIN_RATE
+                and episode >= constants.MIN_TRAIN_EPISODES
+            ):
                 print(
-                    f"🎯 Target win rate {constants.TARGET_WIN_RATE:.2f} achieved! Stopping early."
+                    f"🎯 Target composite score {constants.TARGET_WIN_RATE:.2f} achieved and minimum episodes reached! Stopping early."
                 )
                 break
 
-            if early_stop_counter >= constants.EARLY_STOP_PATIENCE:
+            if (
+                early_stop_counter >= constants.EARLY_STOP_PATIENCE
+                and episode >= constants.MIN_TRAIN_EPISODES
+            ):
                 print(
-                    f"⏹️  Early stopping: No improvement for {constants.EARLY_STOP_PATIENCE} evaluations"
+                    f"⏹️  Early stopping: No improvement for {constants.EARLY_STOP_PATIENCE} evaluations and minimum episodes reached"
                 )
                 break
 

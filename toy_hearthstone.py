@@ -129,7 +129,7 @@ def play_game(agent1, agent2, visualize=False):
 
 def get_state_size():
     dummy_game = setup_game()
-    dummy_state = enhanced_encode_state(dummy_game, 0)  # You'll need to import this
+    dummy_state = enhanced_encode_state(dummy_game, 0)
     return dummy_state.shape[0]
 
 
@@ -137,15 +137,28 @@ STATE_SIZE = get_state_size()  # This should be around 70-80 for the enhanced en
 ACTION_SPACE_SIZE = 50
 
 if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--selfplay",
+        action="store_true",
+        help="DQN vs DQN instead of DQN vs RandomAgent",
+    )
+    parser.add_argument(
+        "--games", type=int, default=1000, help="Number of games to simulate"
+    )
+    args = parser.parse_args()
+
     dqn_agent = DQNPlayAgent(
         state_dim=STATE_SIZE,
         action_dim=ACTION_SPACE_SIZE,
-        model_path="/Users/manas/projects/code/hs_solver/dqn_policy/dqn_policy_final.pt",  # We will load the state_dict directly
+        model_path="/Users/manas/projects/code/hs_solver/dqn_policy/best.pt",
     )
     random_agent = RandomAgent()
 
     # Play one visualized game with random first player
-    agents = [dqn_agent, random_agent]
+    agents = [dqn_agent, dqn_agent if args.selfplay else random_agent]
     random.shuffle(agents)
     print(
         f"Player 1: {'DQN' if isinstance(agents[0], DQNPlayAgent) else 'RandomAgent'}"
@@ -155,13 +168,13 @@ if __name__ == "__main__":
     )
     play_game(agents[0], agents[1], visualize=True)
 
-    # Simulate 1000 games with random first/second for each, tracking detailed stats
+    # Simulate games with random first/second for each, tracking detailed stats
     stats = {
         "dqn_first": {"wins": 0, "losses": 0, "turns_win": [], "turns_loss": []},
         "dqn_second": {"wins": 0, "losses": 0, "turns_win": [], "turns_loss": []},
     }
-    for i in range(1000):
-        agents = [dqn_agent, random_agent]
+    for i in range(args.games):
+        agents = [dqn_agent, dqn_agent if args.selfplay else random_agent]
         random.shuffle(agents)
         dqn_first = isinstance(agents[0], DQNPlayAgent)
         winner = None
