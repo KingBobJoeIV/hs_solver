@@ -199,22 +199,39 @@ if __name__ == "__main__":
                     break
             turns += 1
         winner = state.winner
-        # DQN is first player
-        if dqn_first:
-            if winner == 0:
-                stats["dqn_first"]["wins"] += 1
-                stats["dqn_first"]["turns_win"].append(turns)
-            elif winner == 1:
-                stats["dqn_first"]["losses"] += 1
-                stats["dqn_first"]["turns_loss"].append(turns)
-        # DQN is second player
+        # Determine DQN's index and stat key
+        if isinstance(agents[0], DQNPlayAgent) and not isinstance(
+            agents[1], DQNPlayAgent
+        ):
+            dqn_idx = 0
+            stat_key = "dqn_first"
+        elif not isinstance(agents[0], DQNPlayAgent) and isinstance(
+            agents[1], DQNPlayAgent
+        ):
+            dqn_idx = 1
+            stat_key = "dqn_second"
+        elif isinstance(agents[0], DQNPlayAgent) and isinstance(
+            agents[1], DQNPlayAgent
+        ):
+            # Self-play: count both perspectives
+            for idx, stat_key in zip([0, 1], ["dqn_first", "dqn_second"]):
+                if winner == idx:
+                    stats[stat_key]["wins"] += 1
+                    stats[stat_key]["turns_win"].append(turns)
+                elif winner is not None:
+                    stats[stat_key]["losses"] += 1
+                    stats[stat_key]["turns_loss"].append(turns)
+            continue
         else:
-            if winner == 1:
-                stats["dqn_second"]["wins"] += 1
-                stats["dqn_second"]["turns_win"].append(turns)
-            elif winner == 0:
-                stats["dqn_second"]["losses"] += 1
-                stats["dqn_second"]["turns_loss"].append(turns)
+            # No DQN agent in this game (should not happen)
+            continue
+
+        if winner == dqn_idx:
+            stats[stat_key]["wins"] += 1
+            stats[stat_key]["turns_win"].append(turns)
+        elif winner is not None:
+            stats[stat_key]["losses"] += 1
+            stats[stat_key]["turns_loss"].append(turns)
 
     def summarize(label, d):
         total = d["wins"] + d["losses"]
