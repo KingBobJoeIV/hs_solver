@@ -83,8 +83,17 @@ def enhanced_calculate_reward(game, prev_game_state, action, acting_player_idx):
     # Mana efficiency
     if action[0] == "end":
         wasted_mana = prev_current_player.mana
-        if wasted_mana > 1:
+        # Penalize any unspent mana if there are playable cards
+        playable = False
+        for idx, card in enumerate(prev_current_player.hand):
+            if hasattr(card, "mana") and card.mana <= prev_current_player.mana:
+                playable = True
+                break
+        if wasted_mana > 0 and playable:
             reward += constants.REWARD_CONFIG["mana_waste"] * wasted_mana
+        # Optionally, small bonus for using all mana
+        if wasted_mana == 0:
+            reward += 0.1  # Encourage using all mana
 
     mana_spent = prev_current_player.mana - current_player.mana
     if mana_spent > 0 and action[0] == "play":

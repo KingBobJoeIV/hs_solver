@@ -26,7 +26,7 @@ CARD_LIBRARY = {c.name: c for c in ALL_CARDS}
 
 
 def build_deck():
-    return [
+    deck = [
         CARD_LIBRARY["1/1"],
         CARD_LIBRARY["1 mana deal 1"],
         CARD_LIBRARY["2/2"],
@@ -35,6 +35,8 @@ def build_deck():
         CARD_LIBRARY["3 2/2 deal 1"],
         CARD_LIBRARY["3 mana deal 2"],
     ]
+    random.shuffle(deck)
+    return deck
 
 
 def setup_game():
